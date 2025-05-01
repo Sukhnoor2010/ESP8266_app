@@ -1,0 +1,117 @@
+#define BLYNK_TEMPLATE_ID "TMPL3_SxIkT2a"
+#define BLYNK_TEMPLATE_NAME "Accidentnotification"
+#define BLYNK_AUTH_TOKEN "sXd4h4JIuRitKRk_lrbXhbL2vDNQIxdD"
+
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_ADXL345_U.h>
+#include <ESP8266WebServer.h>
+
+// Global variables
+String gpsLat = "";
+String gpsLon = "";
+
+Adafruit_ADXL345_Unified accel = Adafruit_ADXL345_Unified(12345);
+ESP8266WebServer server(80);
+
+// Wi-Fi credentials (HARD-CODED)
+const char* ssid = "Your_SSID";
+const char* pass = "Your_PASSWORD";
+
+// Button pin
+const int buttonPin = D3; // GPIO0
+
+// State variables
+bool accidentDetected = false;
+bool notificationSent = false;
+bool cancelRequested = false;
+unsigned long accidentTime = 0;
+const unsigned long cancelWindow = 5000; // 5 seconds to cancel
+
+void sendNotification() {
+  if (cancelRequested) {
+    Serial.println("Notification canceled by user.");
+    cancelRequested = false;
+    return;
+  }
+
+  String msg = "Accident detected! ";
+  if (gpsLat != "" && gpsLon != "") {
+    msg += "Location: https://maps.google.com/?q=" + gpsLat + "," + gpsLon;
+  } else {
+    msg += "No location data.";
+  }
+
+  Blynk.logEvent("accident_", msg);
+  Serial.println("Notification sent.");
+  Serial.println(msg);
+  notificationSent = true;
+}
+
+void handleGPS() {
+  if (server.hasArg("lat") && server.hasArg("lon")) {
+    gpsLat = server.arg("lat");
+    gpsLon = server.arg("lon");
+    Serial.println("GPS updated: " + gpsLat + ", " + gpsLon);
+    server.send(200, "text/plain", "GPS Received");
+  } else {
+    server.send(400, "text/plain", "Missing lat/lon");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  WiFi.begin(ssid, pass);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500); Serial.print(".");
+  }
+  Serial.println("\nConnected to Wi-Fi");
+  Serial.print("IP address: "); Serial.println(WiFi.localIP());
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  if (!accel.begin()) {
+    Serial.println("ADXL345 not detected. Check wiring.");
+    while (1);
+  }
+  accel.setRange(ADXL345_RANGE_16_G);
+
+  server.on("/gps", handleGPS);
+  server.begin();
+  Serial.println("Web server started.");
+}
+
+void loop() {
+  Blynk.run();
+  server.handleClient();
+
+  sensors_event_t event;
+  accel.getEvent(&event);
+
+  float shakeThreshold = 15.0;
+
+  if ((abs(event.acceleration.x) > shakeThreshold ||
+       abs(event.acceleration.y) > shakeThreshold ||
+       abs(event.acceleration.z) > shakeThreshold) && !accidentDetected) {
+    Serial.println("Shake detected!");
+    accidentDetected = true;
+    accidentTime = millis();
+  }
+
+  if (accidentDetected && digitalRead(buttonPin) == LOW) {
+    cancelRequested = true;
+    Serial.println("Cancel button pressed!");
+  }
+
+  if (accidentDetected && millis() - accidentTime >= cancelWindow && !notificationSent) {
+    sendNotification();
+    accidentDetected = false;
+    cancelRequested = false;
+    notificationSent = false;
+  }
+}
